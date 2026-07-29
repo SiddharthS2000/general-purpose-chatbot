@@ -4,11 +4,10 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-
 logger = getLogger(__name__)
 
 DEFAULT_API_KEY = os.environ.get("API_KEY")
-DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_MODEL = "gemini-3.6-flash"
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_MAX_OUTPUT_TOKENS = 512
 DEFAULT_TOKEN_BUDGET = 4096
@@ -19,78 +18,118 @@ class Chatbot:
         self,
         model=None,
         api_key=None,
-        temperature: float = 0.7,
-        max_output_tokens=None,
-        token_budget=None,
+        temperature: float = DEFAULT_TEMPERATURE,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
     ):
-        self.model = model if model else DEFAULT_MODEL
-        self.api_key = api_key if api_key else DEFAULT_API_KEY
-        self.temperature = temperature if temperature else DEFAULT_TEMPERATURE
-        self.max_output_tokens = (
-            max_output_tokens if max_output_tokens else DEFAULT_MAX_OUTPUT_TOKENS
-        )
-        self.token_budget = token_budget if token_budget else DEFAULT_TOKEN_BUDGET
+        self._model = model if model else DEFAULT_MODEL
+        self._api_key = api_key if api_key else DEFAULT_API_KEY
+        self._temperature = temperature
+        self._max_output_tokens = max_output_tokens
+        self._token_budget = token_budget
 
-        self.client = genai.Client()
+        self.client = genai.Client(api_key=self._api_key)
+        self.chat = self.client.chats.create(model=self._model)
 
-    def send_message(self, prompt: str) -> str:
-        response = self.chat.send_message(
-            prompt,
-            config={
-                "temperature": self.temperature,
-                "max_output_tokens": self.max_output_tokens,
-                "token_budget": self.token_budget,
-            },
-        )
-        reply = response.text
+        # ✅ dict for per-model usage
+        self.token_usage = {}
+        self.request_count = 0
+        self.history = []
+        self.token_log = []  # per-turn log for current model
 
-        # Track usage
-        usage = response.usage_metadata
-        self.token_log.append(
-            {
-                "prompt": usage.prompt_token_count,
-                "output": usage.candidates_token_count,
-                "total": usage.total_token_count,
+        if self._model not in self.token_usage:
+            self.token_usage[self._model] = [{"prompt": 0, "output": 0, "total": 0}]
+
+    # --- Model Switching ---
+    def switch_model(self, new_model: str):
+        logger.info(f"Switching model from {self._model} to {new_model}")
+        self._model = new_model
+        self.chat = self.client.chats.create(model=self._model, history=self.history)
+        self.request_count = 0
+        self.token_log = []
+        if new_model not in self.token_usage:
+            self.token_usage[new_model] = [{"prompt": 0, "output": 0, "total": 0}]
+        logger.info(f"Model switched successfully to {self._model}")
+
+    # --- Send Message + Token Tracking ---
+    def send_message(self, user_input: str) -> str:
+        try:
+            response = self.chat.send_message(user_input)
+            self.request_count += 1
+
+            # Log history
+            self.history = self.chat.get_history()
+
+            # Track usage per model
+            usage = {
+                "prompt": response.usage_metadata.prompt_token_count,
+                "output": response.usage_metadata.candidates_token_count,
+                "total": response.usage_metadata.total_token_count,
             }
-        )
-        self.request_count += 1
-        return reply
+            self.token_usage[self._model].append(usage)
 
-    def get_token_summary(self):
-        return sum(log["total"] for log in self.token_log)
+            # Also keep per-turn log for current model
+            self.token_log.append(usage)
 
-    def get_tokens_left(self):
-        # Remaining budget = token_budget - last turn total
-        if not self.token_log:
-            return self.token_budget
-        last_turn = self.token_log[-1]["total"]
-        return max(self.token_budget - last_turn, 0)
+            return response.text
+        except genai.errors.APIError as api_error:
+            logger.error(f"API error: {api_error.message}")
+            return api_error.message
+
+    # --- Token Summary ---
+    def get_token_summary(self, model=None) -> int:
+        model = model or self._model
+        logs = self.token_usage.get(model, [])
+        return sum(log["total"] for log in logs)
+
+    def get_all_token_summaries(self) -> dict:
+        return {
+            m: sum(log["total"] for log in logs) for m, logs in self.token_usage.items()
+        }
+
+    # --- Properties ---
+    @property
+    def api_key(self):
+        return self._api_key
+
+    @api_key.setter
+    def api_key(self, value):
+        self._api_key = value
+
+    @property
+    def model(self):
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
+
+    @property
+    def temperature(self):
+        return self._temperature
 
     @temperature.setter
     def temperature(self, value: float):
-        if value < 0 or value > 2:
-            err_msg = "Temperature should be between 0 and 2"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
-        self.temperature = value
+        if not (0 <= value <= 2):
+            raise ValueError("Temperature should be between 0 and 2")
+        self._temperature = value
+
+    @property
+    def max_output_tokens(self):
+        return self._max_output_tokens
 
     @max_output_tokens.setter
     def max_output_tokens(self, value: int):
-        if value < 0:
-            err_msg = "Max output tokens should be greater than 0"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
-        self.max_output_tokens = value
+        if value <= 0:
+            raise ValueError("Max output tokens should be greater than 0")
+        self._max_output_tokens = value
+
+    @property
+    def token_budget(self):
+        return self._token_budget
 
     @token_budget.setter
     def token_budget(self, value: int):
-        if value < 0:
-            err_msg = "Max output tokens should be greater than 0"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
-        self.token_budget = value
-
-    def switch_model(self, new_model: str):
-        # Start a new chat session with preserved history
-        self.model = new_model
-        self.chat = self.client.chat.start(model=new_model, history=self.history)
+        if value <= 0:
+            raise ValueError("Token budget should be greater than 0")
+        self._token_budget = value
