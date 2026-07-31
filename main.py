@@ -74,7 +74,17 @@ def main():
         st.sidebar.bar_chart(token_stats)
 
     # --- Chat UI ---
-    st.title("💬 Gemini Chatbot (OOP + Quota Tracker)")
+    st.title("💬 Gemini Chatbot")
+    # Display full chat history
+    for msg in bot.history:
+        role = msg.role
+        text = msg.parts[0].text
+
+        if role == "user":
+            st.chat_message("user").write(text)
+        elif role == "model":
+            st.chat_message("assistant").write(text)
+
     if prompt := st.chat_input("Ask me anything..."):
         st.chat_message("user").write(prompt)
         reply = bot.send_message(prompt)
