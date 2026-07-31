@@ -2,15 +2,24 @@ from google import genai
 from logging import getLogger
 import os
 from dotenv import load_dotenv
+import streamlit as st
 
 load_dotenv()
 logger = getLogger(__name__)
 
-DEFAULT_API_KEY = os.environ.get("API_KEY")
 DEFAULT_MODEL = "gemini-3.6-flash"
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_MAX_OUTPUT_TOKENS = 512
 DEFAULT_TOKEN_BUDGET = 4096
+
+# Try Streamlit secrets first (production)
+if "API_KEY" in st.secrets:
+    DEFAULT_API_KEY = st.secrets["API_KEY"]
+else:
+    # Fallback to .env (local dev)
+    load_dotenv()
+    DEFAULT_API_KEY = os.environ.get("API_KEY")
+
 
 
 class Chatbot:
